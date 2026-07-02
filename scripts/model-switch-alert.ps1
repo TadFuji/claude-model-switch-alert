@@ -213,7 +213,7 @@ function Invoke-Main {
 
     # Still switched: gentle beep every turn until noticed.
     if (Test-SoundOk) {
-        [Console]::Beep($BEEP_FREQ, $BEEP_MS)
+        try { [Console]::Beep($BEEP_FREQ, $BEEP_MS) } catch {}
     }
     Save-CurrentState
     Write-Output (@{ systemMessage = ($Messages.systemMessageStillSwitchedTemplate -f $model, $baseline) } | ConvertTo-Json -Compress)

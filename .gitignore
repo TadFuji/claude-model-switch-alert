@@ -1,0 +1,12 @@
+# PowerShell / Pester
+*.log
+TestResults.xml
+
+# OS cruft
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Editors
+.vscode/
+*.swp

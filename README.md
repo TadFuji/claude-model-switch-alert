@@ -1,10 +1,22 @@
 # model-switch-alert (Windows port)
 
+[![CI](https://github.com/TadFuji/claude-model-switch-alert/actions/workflows/ci.yml/badge.svg)](https://github.com/TadFuji/claude-model-switch-alert/actions/workflows/ci.yml)
+[![PowerShell 5.1+](https://img.shields.io/badge/PowerShell-5.1%2B-5391FE?logo=powershell&logoColor=white)](https://github.com/TadFuji/claude-model-switch-alert)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Claude Code のモデルが静かに切り替わったことを、サウンドで知らせるプラグインです。
 
 本家 [KaishuShito/claude-model-switch-alert](https://github.com/KaishuShito/claude-model-switch-alert) をフォークし、macOS 専用だった仕組みを Windows（PowerShell）向けに移植したものです。
 
 Fable 5 には、安全分類器がリクエストをフラグすると Opus 4.8 へ自動的に切り替わる仕組みがあります（[Redeploying Fable 5](https://www.anthropic.com/news/redeploying-fable-5)）。切り替えはセッションの途中で静かに起きるため、気づかないまま別のモデルで作業を続けてしまうことがあります。このプラグインは毎ターン終了時に実際の応答モデルを確認し、期待するモデルと違っていればすぐに知らせます。
+
+## 特徴
+
+- 自動切り替わりの瞬間・切り替わったまま・元に戻った瞬間で、それぞれ違う音と Windows 通知（バルーン）を出す
+- `/model` での手動切り替えは検知して無視する（誤検知・誤アラートを避ける）
+- 並列セッションでアラームが鳴り響かないよう、マシン全体で共有するクールダウンを内蔵
+- Windows 標準機能のみで動作。追加インストール一切不要
+- [Pester](https://pester.dev/) によるテストと GitHub Actions の CI で継続的に検証
 
 ## アラートの段階設計（鳴り続けない）
 
@@ -72,12 +84,26 @@ setx CLAUDE_EXPECTED_MODEL "claude-fable-5"
 /plugin uninstall model-switch-alert@tadfuji-market
 ```
 
+## 開発・テスト
+
+このリポジトリには [Pester](https://pester.dev/)（PowerShell 標準のテストフレームワーク）によるテスト（`scripts/model-switch-alert.tests.ps1`）と、GitHub Actions による CI（Lint: PSScriptAnalyzer / Test: Pester）が用意されています。
+
+```powershell
+# Pester が無ければ導入
+Install-Module Pester -Force -Scope CurrentUser
+
+# テスト実行
+Invoke-Pester -Path .\scripts\model-switch-alert.tests.ps1
+```
+
+貢献方法は [CONTRIBUTING.md](CONTRIBUTING.md) を、変更履歴は [CHANGELOG.md](CHANGELOG.md) を参照してください。
+
 ## English
 
 Sound alerts for Claude Code when your model silently switches. Fable 5 can fall back to Opus 4.8 when a safety classifier flags a request. A `Stop` hook reads `.message.model` from the session transcript (hook stdin has no model field) and plays staged alerts: a warning sound + voice + Windows balloon notification on switch, a short beep every turn while switched, and a fanfare on recovery. Manual `/model` switches leave a "Set model to" trace in the transcript, so they are skipped silently and the expected baseline follows your choice — only automatic fallbacks alert. All sounds ship with Windows (`C:\Windows\Media`) plus `Console.Beep` — no extra dependencies. Set `CLAUDE_EXPECTED_MODEL` to pin a strict initial baseline.
 
-This is a Windows port, forked from [KaishuShito/claude-model-switch-alert](https://github.com/KaishuShito/claude-model-switch-alert) (originally macOS-only).
+This is a Windows port, forked from [KaishuShito/claude-model-switch-alert](https://github.com/KaishuShito/claude-model-switch-alert) (originally macOS-only). Covered by a Pester test suite and GitHub Actions CI (lint + tests) - see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE). [CHANGELOG.md](CHANGELOG.md) has the full version history.
