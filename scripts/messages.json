@@ -1,0 +1,12 @@
+{
+  "voiceRecoveredJa": "元のモデルに戻りました",
+  "voiceRecoveredEn": "Model restored",
+  "voiceSwitchedJa": "注意。モデルが切り替わりました",
+  "voiceSwitchedEn": "Warning. Model switched",
+  "notifyTitle": "Claude Code: モデル切り替え",
+  "notifyRecoveredTemplate": "{0} に戻りました",
+  "notifySwitchedTemplate": "⚠️ {0} から {1} に切り替わりました",
+  "systemMessageRecoveredTemplate": "✅ {0} に戻りました",
+  "systemMessageSwitchedTemplate": "⚠️ モデルが {0} から {1} に切り替わっています",
+  "systemMessageStillSwitchedTemplate": "⚠️ 引き続き {0} で応答中（{1} ではありません）"
+}

@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/model-switch-alert.sh\"",
+            "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PLUGIN_ROOT}/scripts/model-switch-alert.ps1\"",
             "timeout": 10,
             "statusMessage": "Checking model switch"
           }
