@@ -1,7 +1,9 @@
 # model-switch-alert.ps1
-# Stop hook: detect AUTOMATIC model fallback (e.g. Fable 5 -> Opus 4.8) and alert (Windows port).
-# Manual switches via /model are recognized from their transcript trace ("Set model to ...")
-# and skipped silently - the expected baseline follows the user's choice.
+# Stop hook: alert when the model actually answering differs from the model the user expects.
+# "Expected" = the model most recently requested via /model, else CLAUDE_EXPECTED_MODEL, else the
+# session's first observed model. This catches BOTH a mid-session automatic fallback (Fable 5 ->
+# Opus 4.8) AND a /model request that a safeguard silently overrides (you ask for Fable 5 but every
+# reply is still Opus 4.8). A manual switch that is actually honored stays silent.
 # Staged alerts: switch moment = alert sound + voice + balloon notification /
 #                while switched = short beep every turn / recovery = fanfare.
 # Forked from https://github.com/KaishuShito/claude-model-switch-alert (Windows port by TadFuji).
@@ -25,9 +27,9 @@ function Write-HookErrorLog {
 function Get-LatestModel {
     param([string]$TranscriptPath)
     $model = $null
-    Get-Content -LiteralPath $TranscriptPath -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object {
-        if ([string]::IsNullOrWhiteSpace($_)) { return }
-        try { $obj = $_ | ConvertFrom-Json } catch { return }
+    foreach ($line in (Get-Content -LiteralPath $TranscriptPath -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try { $obj = $line | ConvertFrom-Json } catch { continue }
         if ($obj.type -eq 'assistant' -and -not $obj.isSidechain) {
             $m = $obj.message.model
             if ($m -and -not $m.StartsWith('<')) { $model = $m }
@@ -36,36 +38,42 @@ function Get-LatestModel {
     return $model
 }
 
-# Detect a manual model switch: a user-side trace like "Set model to ..." (the
-# /model command output) appearing after the last assistant message that used a
-# model different from the current one. Automatic fallbacks leave no such trace.
-function Test-ManualSwitch {
-    param([string]$TranscriptPath, [string]$NewModel)
-    $events = @()
-    Get-Content -LiteralPath $TranscriptPath -Tail 2000 -Encoding UTF8 -ErrorAction SilentlyContinue | ForEach-Object {
-        if ([string]::IsNullOrWhiteSpace($_)) { return }
-        try { $obj = $_ | ConvertFrom-Json } catch { return }
-        if ($obj.type -eq 'assistant' -and -not $obj.isSidechain) {
-            $events += if ($obj.message.model -eq $NewModel) { 'same' } else { 'diff' }
-        } elseif ($obj.type -eq 'user') {
-            $content = $obj.message.content
-            if ($null -eq $content) { $content = '' }
-            if ($content -isnot [string]) {
-                try { $content = $content | ConvertTo-Json -Compress -Depth 10 } catch { $content = '' }
-            }
-            if ($content.Contains('Set model to') -or $content.Contains('<command-name>/model') -or $content.Contains('<command-name>/fast')) {
-                $events += 'M'
-            }
+# The model the user most recently requested via /model, read from the command's confirmation
+# trace ("Set model to <name> ..."). This is the user's INTENT and survives a safeguard override:
+# when /model asks for Fable 5 but every reply is still Opus 4.8, the request trace is the only
+# evidence of what the user actually wanted.
+# Only the /model output arrives as a plain string; tool results and other structured content are
+# arrays, which we skip - otherwise this script's own comments (which contain the words
+# "Set model to") would be misread as a request when the file is read into the transcript.
+function Get-RequestedModel {
+    param([string]$TranscriptPath)
+    $requested = $null
+    $esc = [char]27
+    foreach ($line in (Get-Content -LiteralPath $TranscriptPath -Tail 2000 -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        try { $obj = $line | ConvertFrom-Json } catch { continue }
+        if ($obj.type -ne 'user') { continue }
+        $content = $obj.message.content
+        if ($content -isnot [string]) { continue }
+        $clean = $content -replace "$esc\[[0-9;]*m", ''  # strip ANSI colour codes around the name
+        if ($clean -match 'Set model to (.+?)(?: and saved|<|$)') {
+            $requested = $matches[1].Trim()
         }
     }
-    $lastDiff = -1
-    for ($j = 0; $j -lt $events.Count; $j++) {
-        if ($events[$j] -eq 'diff') { $lastDiff = $j }
-    }
-    for ($j = $lastDiff + 1; $j -lt $events.Count; $j++) {
-        if ($events[$j] -eq 'M') { return $true }
-    }
-    return $false
+    return $requested
+}
+
+# True when the emitted model id is the one the user expects. The expected value may be a model id
+# / prefix (claude-fable-5, from CLAUDE_EXPECTED_MODEL or a persisted baseline) or a display name
+# ("Fable 5", from a /model trace). Both normalise to a token that is a substring of the emitted
+# id ("fable5" is inside "claudefable5"), so a single containment check covers every source.
+function Test-ModelMatch {
+    param([string]$EmittedModel, [string]$Expected)
+    if ([string]::IsNullOrWhiteSpace($EmittedModel) -or [string]::IsNullOrWhiteSpace($Expected)) { return $false }
+    $e = ($EmittedModel -replace '[^0-9A-Za-z]', '').ToLowerInvariant()
+    $x = ($Expected     -replace '[^0-9A-Za-z]', '').ToLowerInvariant()
+    if (-not $e -or -not $x) { return $false }
+    return $e.Contains($x)
 }
 
 function Invoke-PlaySound {
@@ -139,23 +147,33 @@ function Invoke-Main {
     $model = Get-LatestModel -TranscriptPath $transcript
     if (-not $model) { return }
 
-    # Per-session state: line 1 = baseline (the model the user chose), line 2 = last seen model.
-    # The baseline starts as CLAUDE_EXPECTED_MODEL (if set) or the session's first observed model,
-    # and follows manual /model switches. Alerts fire only when the model leaves the baseline
-    # without a manual-switch trace.
+    $requested = Get-RequestedModel -TranscriptPath $transcript
+
+    # Per-session state: line 1 = expected model (the user's intent), line 2 = last emitted model.
     $stateFile = Join-Path $env:TEMP "claude-model-alert-$session.txt"
-    $baseline = $null
+    $storedBaseline = $null
     $last = $null
     if (Test-Path -LiteralPath $stateFile) {
         $lines = @(Get-Content -LiteralPath $stateFile -Encoding UTF8 -ErrorAction SilentlyContinue)
-        if ($lines.Count -ge 1) { $baseline = $lines[0] }
+        if ($lines.Count -ge 1) { $storedBaseline = $lines[0] }
         if ($lines.Count -ge 2) { $last = $lines[1] }
     }
-    if (-not $baseline) { $baseline = if ($env:CLAUDE_EXPECTED_MODEL) { $env:CLAUDE_EXPECTED_MODEL } else { $model } }
-    if (-not $last) { $last = $baseline }
+
+    # The expected model, in priority order: an explicit /model request (strongest signal, and it
+    # survives a safeguard override) > the baseline persisted from earlier turns > the
+    # CLAUDE_EXPECTED_MODEL override > the first model actually observed this session.
+    $expected =
+        if ($requested)                     { $requested }
+        elseif ($storedBaseline)            { $storedBaseline }
+        elseif ($env:CLAUDE_EXPECTED_MODEL) { $env:CLAUDE_EXPECTED_MODEL }
+        else                                { $model }
+
+    # On the first turn, treat "last" as the expected model so a first-turn mismatch reads as a
+    # fresh switch (strong alert) rather than an ongoing one (beep).
+    if (-not $last) { $last = $expected }
 
     function Save-CurrentState {
-        Set-Content -LiteralPath $stateFile -Value @($baseline, $model) -Encoding UTF8
+        Set-Content -LiteralPath $stateFile -Value @($expected, $model) -Encoding UTF8
     }
 
     # Machine-wide sound cooldown: with many parallel sessions, individual per-session alerts
@@ -177,46 +195,49 @@ function Invoke-Main {
         return $true
     }
 
-    if ($model.StartsWith($baseline)) {
-        if (-not $last.StartsWith($baseline)) {
-            # Was switched away, now back at baseline: recovery.
+    $matchesNow  = Test-ModelMatch -EmittedModel $model -Expected $expected
+    $matchedLast = Test-ModelMatch -EmittedModel $last  -Expected $expected
+    # The user just picked a new model (via /model) that differs from the persisted baseline.
+    $baselineChanged = $storedBaseline -and ($expected -ne $storedBaseline)
+
+    if ($matchesNow) {
+        if ((-not $matchedLast) -and (-not $baselineChanged)) {
+            # Was away from the expected model, now back: recovery. (Suppressed when the baseline
+            # just changed, so switching TO a model that is honored never fanfares.)
             if (Test-SoundOk) {
                 Invoke-PlaySound -Path $SOUND_RECOVER
                 Invoke-Speak -JapaneseText $Messages.voiceRecoveredJa -EnglishText $Messages.voiceRecoveredEn
-                Show-Notification -Text ($Messages.notifyRecoveredTemplate -f $baseline) -Title $Messages.notifyTitle -Kind 'Info'
+                Show-Notification -Text ($Messages.notifyRecoveredTemplate -f $expected) -Title $Messages.notifyTitle -Kind 'Info'
             }
             Save-CurrentState
-            Write-Output (@{ systemMessage = ($Messages.systemMessageRecoveredTemplate -f $baseline) } | ConvertTo-Json -Compress)
+            Write-Output (@{ systemMessage = ($Messages.systemMessageRecoveredTemplate -f $expected) } | ConvertTo-Json -Compress)
             return
         }
+        # Expected model is being served (or the user just switched to one that is honored): silent.
         Save-CurrentState
         return
     }
 
-    if ($model -ne $last) {
-        if (Test-ManualSwitch -TranscriptPath $transcript -NewModel $model) {
-            # The user switched models on purpose; follow silently.
-            $baseline = $model
-            Save-CurrentState
-            return
-        }
-        # Automatic switch: strong alert + sound + voice + balloon notification.
+    # Mismatch: the model answering is not the one the user expects.
+    if (($model -ne $last) -or $baselineChanged) {
+        # A fresh switch away from the expected model - either an automatic fallback or a /model
+        # request that a safeguard overrode. Strong alert + sound + voice + balloon notification.
         if (Test-SoundOk) {
             Invoke-PlaySound -Path $SOUND_SWITCH
             Invoke-Speak -JapaneseText $Messages.voiceSwitchedJa -EnglishText $Messages.voiceSwitchedEn
-            Show-Notification -Text ($Messages.notifySwitchedTemplate -f $baseline, $model) -Title $Messages.notifyTitle -Kind 'Warning'
+            Show-Notification -Text ($Messages.notifySwitchedTemplate -f $expected, $model) -Title $Messages.notifyTitle -Kind 'Warning'
         }
         Save-CurrentState
-        Write-Output (@{ systemMessage = ($Messages.systemMessageSwitchedTemplate -f $baseline, $model) } | ConvertTo-Json -Compress)
+        Write-Output (@{ systemMessage = ($Messages.systemMessageSwitchedTemplate -f $expected, $model) } | ConvertTo-Json -Compress)
         return
     }
 
-    # Still switched: gentle beep every turn until noticed.
+    # Still on the wrong model: gentle beep every turn until noticed.
     if (Test-SoundOk) {
         try { [Console]::Beep($BEEP_FREQ, $BEEP_MS) } catch {}
     }
     Save-CurrentState
-    Write-Output (@{ systemMessage = ($Messages.systemMessageStillSwitchedTemplate -f $model, $baseline) } | ConvertTo-Json -Compress)
+    Write-Output (@{ systemMessage = ($Messages.systemMessageStillSwitchedTemplate -f $model, $expected) } | ConvertTo-Json -Compress)
 }
 
 try {

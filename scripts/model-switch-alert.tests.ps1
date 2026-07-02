@@ -68,6 +68,14 @@ BeforeAll {
         @{ type = 'user'; message = @{ content = $Content } } | ConvertTo-Json -Compress
     }
 
+    # A tool_result user turn: content is an array, not a string. The script must ignore any
+    # "Set model to" text here (e.g. this script's own source read into the transcript) so it is
+    # never mistaken for a real /model request.
+    function script:New-ToolResultUserLine {
+        param([string]$Text)
+        @{ type = 'user'; message = @{ content = @(@{ tool_use_id = 'toolu_x'; type = 'tool_result'; content = $Text }) } } | ConvertTo-Json -Compress -Depth 10
+    }
+
     function script:New-TranscriptFile {
         param([string[]]$Lines)
         $path = Join-Path $TestDrive "transcript-$([guid]::NewGuid().ToString('N')).jsonl"
@@ -214,6 +222,74 @@ Describe 'model-switch-alert.ps1' {
             $lines = @(Get-Content -LiteralPath (Get-SessionStateFile $session))
             $lines[0] | Should -Be 'claude-model-b'
             $lines[1] | Should -Be 'claude-model-b'
+        }
+    }
+
+    Context 'manual /model request overridden by a safeguard (requested != served)' {
+        It 'alerts instead of staying silent, and records the requested model as the expected baseline' {
+            $session = New-TestSessionId
+            # Session started on model-a; the user then asks for model-b but every reply is still model-a.
+            Set-SessionState -SessionId $session -Baseline 'claude-model-a' -Last 'claude-model-a'
+            $transcript = New-TranscriptFile -Lines @(
+                (New-AssistantLine -Model 'claude-model-a'),
+                (New-UserLine -Content 'Set model to claude-model-b and saved as your default for new sessions'),
+                (New-AssistantLine -Model 'claude-model-a')
+            )
+
+            $result = Invoke-ModelSwitchAlert -TranscriptPath $transcript -SessionId $session
+
+            $result.ExitCode | Should -Be 0
+            $result.Stdout | Should -Not -BeNullOrEmpty
+            $json = $result.Stdout | ConvertFrom-Json
+            $json.systemMessage | Should -Match ([regex]::Escape('claude-model-b'))  # the model the user wanted
+            $json.systemMessage | Should -Match ([regex]::Escape('claude-model-a'))  # the model actually serving
+
+            $lines = @(Get-Content -LiteralPath (Get-SessionStateFile $session))
+            $lines[0] | Should -Be 'claude-model-b'
+            $lines[1] | Should -Be 'claude-model-a'
+        }
+    }
+
+    Context 'manual /model request that is honored (display name + ANSI codes)' {
+        It 'stays silent when the served model matches the requested display name' {
+            $session = New-TestSessionId
+            Set-SessionState -SessionId $session -Baseline 'claude-opus-4-8' -Last 'claude-opus-4-8'
+            $esc = [char]27
+            $transcript = New-TranscriptFile -Lines @(
+                (New-AssistantLine -Model 'claude-opus-4-8'),
+                (New-UserLine -Content "<local-command-stdout>Set model to $esc[1mFable 5$esc[22m and saved as your default for new sessions</local-command-stdout>"),
+                (New-AssistantLine -Model 'claude-fable-5')
+            )
+
+            $result = Invoke-ModelSwitchAlert -TranscriptPath $transcript -SessionId $session
+
+            $result.ExitCode | Should -Be 0
+            $result.Stdout | Should -BeNullOrEmpty
+
+            $lines = @(Get-Content -LiteralPath (Get-SessionStateFile $session))
+            $lines[0] | Should -Be 'Fable 5'
+            $lines[1] | Should -Be 'claude-fable-5'
+        }
+    }
+
+    Context 'false-positive guard' {
+        It 'ignores "Set model to" text that appears inside a tool result, not a real /model trace' {
+            $session = New-TestSessionId
+            Set-SessionState -SessionId $session -Baseline 'claude-model-a' -Last 'claude-model-a'
+            $transcript = New-TranscriptFile -Lines @(
+                (New-AssistantLine -Model 'claude-model-a'),
+                (New-ToolResultUserLine -Text '# Manual switches via /model ... ("Set model to claude-model-b")'),
+                (New-AssistantLine -Model 'claude-model-a')
+            )
+
+            $result = Invoke-ModelSwitchAlert -TranscriptPath $transcript -SessionId $session
+
+            $result.ExitCode | Should -Be 0
+            $result.Stdout | Should -BeNullOrEmpty
+
+            $lines = @(Get-Content -LiteralPath (Get-SessionStateFile $session))
+            $lines[0] | Should -Be 'claude-model-a'
+            $lines[1] | Should -Be 'claude-model-a'
         }
     }
 

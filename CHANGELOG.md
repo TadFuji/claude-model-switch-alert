@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file. Format is based
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-07-02
+
+### Changed
+- Detection is now intent-based: the hook compares the model actually answering against the model the
+  user *expects*, rather than only watching for a change in the emitted model. "Expected" is, in
+  priority order, the model most recently requested via `/model` (read from its "Set model to ..."
+  trace, ANSI codes and display names handled), then the persisted per-session baseline, then
+  `CLAUDE_EXPECTED_MODEL`, then the first model observed.
+- This fixes the case where a `/model` request is silently overridden by a safeguard: asking for
+  Fable 5 and getting Opus 4.8 on every reply now alerts, instead of staying silent because the
+  emitted model never changed. A `/model` switch that is actually honored still stays silent.
+- The `Set model to ...` trace is only read from plain-string user turns, never from tool-result
+  content, so the script's own source (which mentions those words) can't be misread as a request.
+
+### Removed
+- `Test-ManualSwitch`: subsumed by intent-based detection. Whether a switch was manual is now decided
+  by whether the requested model matches the served one, not by the mere presence of a `/model` trace.
+
 ## [1.4.0] - 2026-07-02
 
 Windows port. Forked from [KaishuShito/claude-model-switch-alert](https://github.com/KaishuShito/claude-model-switch-alert)
