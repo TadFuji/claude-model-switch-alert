@@ -9,7 +9,7 @@
     {
       "name": "model-switch-alert",
       "description": "Sound alerts when Claude Code silently falls back from Fable 5 to Opus 4.8 (or any unexpected model) - Windows port",
-      "version": "1.5.0",
+      "version": "1.5.1",
       "author": {
         "name": "TadFuji (Windows port, forked from Kaishu Shito)"
       },

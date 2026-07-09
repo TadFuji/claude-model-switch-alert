@@ -21,14 +21,31 @@ function Write-HookErrorLog {
         Add-Content -Path $ErrorLog -Encoding UTF8 -ErrorAction SilentlyContinue
 }
 
+# Fast tail read. Get-Content -Tail scans the file backwards and is pathologically slow on
+# files with very long lines - on a 2.1 MB transcript it took ~31 s, blowing straight past the
+# hook's 10 s timeout (so the alert never fired at all). A plain sequential read of the whole
+# file plus an in-memory slice takes ~0.1 s on the same transcript.
+function Get-TranscriptTail {
+    param([string]$TranscriptPath, [int]$Count)
+    try {
+        $all = [System.IO.File]::ReadAllLines($TranscriptPath, [System.Text.Encoding]::UTF8)
+    } catch {
+        return @()
+    }
+    if ($all.Length -le $Count) { return $all }
+    return $all[($all.Length - $Count)..($all.Length - 1)]
+}
+
 # Hook stdin has no model field; read the latest assistant message's model from the transcript.
 # Excludes sidechain (subagent) messages: subagents may legitimately run on other models
 # (e.g. Haiku-powered explorers) and must not trigger a false alarm.
 function Get-LatestModel {
     param([string]$TranscriptPath)
     $model = $null
-    foreach ($line in (Get-Content -LiteralPath $TranscriptPath -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue)) {
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    foreach ($line in (Get-TranscriptTail -TranscriptPath $TranscriptPath -Count 200)) {
+        # Transcript lines are compact JSON, so a cheap substring check skips the expensive
+        # ConvertFrom-Json for the many non-assistant lines (tool results can be huge).
+        if ($line -notlike '*"type":"assistant"*') { continue }
         try { $obj = $line | ConvertFrom-Json } catch { continue }
         if ($obj.type -eq 'assistant' -and -not $obj.isSidechain) {
             $m = $obj.message.model
@@ -49,8 +66,10 @@ function Get-RequestedModel {
     param([string]$TranscriptPath)
     $requested = $null
     $esc = [char]27
-    foreach ($line in (Get-Content -LiteralPath $TranscriptPath -Tail 2000 -Encoding UTF8 -ErrorAction SilentlyContinue)) {
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    foreach ($line in (Get-TranscriptTail -TranscriptPath $TranscriptPath -Count 2000)) {
+        # Cheap substring pre-filter: only lines that can possibly carry a /model trace are
+        # worth JSON-parsing (see Get-LatestModel for why this matters on big transcripts).
+        if ($line -notlike '*Set model to*') { continue }
         try { $obj = $line | ConvertFrom-Json } catch { continue }
         if ($obj.type -ne 'user') { continue }
         $content = $obj.message.content

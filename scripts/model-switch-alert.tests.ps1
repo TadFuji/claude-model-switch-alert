@@ -30,6 +30,12 @@ BeforeAll {
     $script:OriginalCooldown = $env:CLAUDE_MODEL_ALERT_COOLDOWN
     $env:CLAUDE_MODEL_ALERT_COOLDOWN = "999999"
 
+    # The script under test falls back to CLAUDE_EXPECTED_MODEL when a session has no baseline
+    # yet. On a machine where that variable is set globally (as on the author's), the first-run
+    # test would inherit it and see a mismatch instead of a silent baseline - isolate it.
+    $script:OriginalExpectedModel = $env:CLAUDE_EXPECTED_MODEL
+    Remove-Item Env:\CLAUDE_EXPECTED_MODEL -ErrorAction SilentlyContinue
+
     $script:GateFile = Join-Path $env:TEMP 'claude-model-alert-sound-gate.txt'
     $script:GateFileExisted = Test-Path -LiteralPath $script:GateFile
     if ($script:GateFileExisted) {
@@ -108,6 +114,10 @@ AfterAll {
         $env:CLAUDE_MODEL_ALERT_COOLDOWN = $script:OriginalCooldown
     } else {
         Remove-Item Env:\CLAUDE_MODEL_ALERT_COOLDOWN -ErrorAction SilentlyContinue
+    }
+
+    if ($null -ne $script:OriginalExpectedModel) {
+        $env:CLAUDE_EXPECTED_MODEL = $script:OriginalExpectedModel
     }
 
     if ($script:GateFileExisted) {

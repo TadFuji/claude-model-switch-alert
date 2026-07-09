@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file. Format is based
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project follows
 [Semantic Versioning](https://semver.org/).
 
+## [1.5.1] - 2026-07-09
+
+### Fixed
+- The Stop hook was hitting its 10 s timeout on ~78% of real runs (70 of 90 recorded), adding a
+  ~10 s pause to the end of every turn and killing the alert before it could fire. Root cause:
+  `Get-Content -Tail` scans the file backwards and is pathologically slow on files with very long
+  lines - Claude Code transcripts are exactly that (measured: ~31 s on a 2.1 MB transcript).
+  Replaced with a sequential `[System.IO.File]::ReadAllLines` plus an in-memory tail slice, and
+  added cheap substring pre-filters so only candidate lines are JSON-parsed. Same transcript now
+  scans in ~0.1 s.
+
 ## [1.5.0] - 2026-07-02
 
 ### Changed
